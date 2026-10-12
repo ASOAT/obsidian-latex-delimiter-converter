@@ -1,0 +1,10 @@
+{
+  "id": "latex-delimiter-converter",
+  "name": "LaTeX Delimiter Converter",
+  "version": "1.0.0",
+  "minAppVersion": "1.1.0",
+  "description": "Convert paired LaTeX delimiters to dollar math syntax in the current note with one click.",
+  "author": "ASOAT",
+  "authorUrl": "https://github.com/ASOAT",
+  "isDesktopOnly": false
+}
