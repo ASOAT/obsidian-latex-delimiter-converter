@@ -170,3 +170,82 @@ test("returns no changes for empty input and rejects nonstrings", () => {
   check("", "", 0, 0);
   assert.throws(() => convertLatexDelimiters(null), TypeError);
 });
+
+function checkCleanup(input, expected, counts) {
+  const result = convertLatexDelimiters(input);
+  assert.equal(result.text, expected);
+  assert.deepEqual(
+    [result.inlineCount, result.displayCount, result.boxedCount, result.tagCount],
+    counts
+  );
+  let position = 0;
+  let replay = "";
+  for (const edit of result.changes) {
+    assert.ok(edit.from >= position);
+    assert.ok(edit.from <= edit.to && edit.to <= input.length);
+    replay += input.slice(position, edit.from) + edit.text;
+    position = edit.to;
+  }
+  assert.equal(replay + input.slice(position), expected);
+  assert.deepEqual(convertLatexDelimiters(expected).changes, []);
+}
+
+test("converts delimiters, unwraps a boxed fraction, and removes a nested tag in one pass", () => {
+  checkCleanup(
+    String.raw`\( \boxed{x+1} \) \[\boxed{\frac{1}{2}} \tag{\text{A{1}}}\]`,
+    String.raw`$x+1$ $$\frac{1}{2}$$`,
+    [1, 1, 2, 1]
+  );
+});
+
+test("cleans existing dollar math including starred tags and preserves line endings", () => {
+  checkCleanup(
+    "$\\boxed{x} \\tag{1}$\r\n$$\r\n\\boxed{E=mc^2} \\tag* {2}\r\n$$",
+    "$x$\r\n$$\r\nE=mc^2\r\n$$",
+    [0, 0, 2, 2]
+  );
+});
+
+test("removes nested boxes and preserves grouping in scripts and macro arguments", () => {
+  checkCleanup(
+    String.raw`$x^\boxed{2+\boxed{3}} + \frac\boxed{a+b}{c}$`,
+    String.raw`$x^{2+{3}} + \frac{a+b}{c}$`,
+    [0, 0, 3, 0]
+  );
+});
+
+test("handles escaped braces and does not change escaped or similarly named commands", () => {
+  checkCleanup(
+    String.raw`$$\boxed{\{x\}} \tag{1\}}$$ $\\boxed{x}+\\tag{2}+\tagged{3}+\boxedOther{y}$`,
+    String.raw`$$\{x\}$$ $\\boxed{x}+\\tag{2}+\tagged{3}+\boxedOther{y}$`,
+    [0, 0, 1, 1]
+  );
+});
+
+test("does not edit commands in prose, Markdown code, properties, or comments", () => {
+  const protectedText = [
+    "---", String.raw`example: '$\boxed{x}\tag{1}$'`, "---",
+    String.raw`Outside math: \boxed{x}\tag{1}`,
+    tick + String.raw`$\boxed{x}\tag{1}$` + tick,
+    "~~~md", String.raw`$$\boxed{x}\tag{1}$$`, "~~~",
+    String.raw`<!-- $\boxed{x}\tag{1}$ -->`,
+    String.raw`$$x % \boxed{comment}\tag{1}`, "$$",
+  ].join("\n") + "\n";
+  checkCleanup(protectedText + String.raw`$\boxed{y}$`, protectedText + "$y$", [0, 0, 1, 0]);
+});
+
+test("leaves unbalanced arguments alone and does not merge control words after tag deletion", () => {
+  checkCleanup(
+    String.raw`$$\boxed{missing$$ $$\tag{missing$$ $$\alpha\tag{1}x$$`,
+    String.raw`$$\boxed{missing$$ $$\tag{missing$$ $$\alpha x$$`,
+    [0, 0, 0, 1]
+  );
+});
+
+test("keeps inline math valid after removing all content or unboxing escaped spaces", () => {
+  checkCleanup(
+    String.raw`$\tag{1}$ and $\boxed{x\ }$ and $\boxed{}$`,
+    "${}$ and ${x\\ }$ and ${}$",
+    [0, 0, 2, 1]
+  );
+});

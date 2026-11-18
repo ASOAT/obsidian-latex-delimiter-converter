@@ -4,12 +4,12 @@ const { convertLatexDelimiters } = require("./converter");
 module.exports = class LatexDelimiterConverter extends Plugin {
   onload() {
     this.converting = false;
-    this.addRibbonIcon("sigma", "转换当前笔记的公式分隔符", () => {
+    this.addRibbonIcon("sigma", "转换并清理当前笔记的公式", () => {
       void this.convertActiveNote();
     });
     this.addCommand({
       id: "convert-current-note",
-      name: "转换当前笔记的公式分隔符",
+      name: "转换并清理当前笔记的公式",
       checkCallback: (checking) => {
         const view = this.app.workspace.getActiveViewOfType(MarkdownView);
         if (!view || !view.file) return false;
@@ -43,7 +43,7 @@ module.exports = class LatexDelimiterConverter extends Plugin {
       const editor = view.editor;
       const result = convertLatexDelimiters(editor.getValue());
       if (result.changes.length === 0) {
-        new Notice("没有找到需要转换的成对公式分隔符。");
+        new Notice("没有找到需要转换或清理的公式。");
         return;
       }
 
@@ -56,7 +56,14 @@ module.exports = class LatexDelimiterConverter extends Plugin {
           text: change.text,
         })),
       }, "latex-delimiter-converter");
-      new Notice(`已转换 ${result.inlineCount} 个行内公式、${result.displayCount} 个块公式。可撤销恢复。`);
+      const summary = [];
+      if (result.inlineCount || result.displayCount) {
+        summary.push(`已转换 ${result.inlineCount} 个行内公式、${result.displayCount} 个块公式`);
+      }
+      if (result.boxedCount || result.tagCount) {
+        summary.push(`已移除 ${result.boxedCount} 个外框、${result.tagCount} 个编号`);
+      }
+      new Notice(summary.join("；") + "。可撤销恢复。");
     } catch (error) {
       console.error("LaTeX Delimiter Converter: conversion failed", error);
       new Notice("公式转换失败，请检查当前笔记是否可以编辑。");

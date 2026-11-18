@@ -1,4 +1,4 @@
-/* LaTeX Delimiter Converter v1.0.0 | MIT License | Built from src/ */
+/* LaTeX Delimiter Converter v1.1.0 | MIT License | Built from src/ */
 var __getOwnPropNames = Object.getOwnPropertyNames;
 var __commonJS = (cb, mod) => function __require() {
   try {
@@ -8,16 +8,106 @@ var __commonJS = (cb, mod) => function __require() {
   }
 };
 
+// src/math-cleanup.js
+var require_math_cleanup = __commonJS({
+  "src/math-cleanup.js"(exports2, module2) {
+    "use strict";
+    function scanMath(text) {
+      const tokens = /\\(?:[A-Za-z]+|[\s\S])|[{}%]/g;
+      const openingBraces = [];
+      const groups = /* @__PURE__ */ new Map();
+      const decorations = [];
+      let match;
+      while ((match = tokens.exec(text)) !== null) {
+        const token = match[0];
+        if (token === "{") {
+          openingBraces.push(match.index);
+        } else if (token === "}" && openingBraces.length) {
+          groups.set(openingBraces.pop(), match.index);
+        } else if (token === "%") {
+          const newline = text.indexOf("\n", tokens.lastIndex);
+          if (newline === -1) break;
+          tokens.lastIndex = newline + 1;
+        } else if (token === "\\boxed" || token === "\\tag") {
+          decorations.push({ token, from: match.index, after: tokens.lastIndex });
+        }
+      }
+      return { groups, decorations };
+    }
+    function isEscaped(text, position) {
+      let slashes = 0;
+      while (position > 0 && text[--position] === "\\") slashes++;
+      return slashes % 2 === 1;
+    }
+    function inlineBounds(text, start, end) {
+      while (start < end && /\s/.test(text[start])) start++;
+      while (end > start && /\s/.test(text[end - 1]) && !isEscaped(text, end - 1)) end--;
+      return { start, end };
+    }
+    function cleanMath(body, inline) {
+      const unchanged = { text: body, boxedCount: 0, tagCount: 0 };
+      if (!body.includes("\\boxed") && !body.includes("\\tag")) return unchanged;
+      const { groups, decorations } = scanMath(body);
+      const boxedGroups = /* @__PURE__ */ new Set();
+      let boxedCount = 0;
+      let tagCount = 0;
+      let text = "";
+      let copiedThrough = 0;
+      const argument = /\s*(?:\*\s*)?/y;
+      for (const { token, from, after } of decorations) {
+        if (from < copiedThrough) continue;
+        const isTag = token === "\\tag";
+        argument.lastIndex = after;
+        const prefix = argument.exec(body)[0];
+        if (!isTag && prefix.includes("*")) continue;
+        const open = argument.lastIndex;
+        const close = groups.get(open);
+        if (close === void 0) continue;
+        let cutFrom = from;
+        if (isTag && /^[ \t]*(?:\r?\n|$)/.test(body.slice(close + 1))) {
+          while (cutFrom > copiedThrough && /[ \t]/.test(body[cutFrom - 1]) && !isEscaped(body, cutFrom - 1)) cutFrom--;
+        }
+        text += body.slice(copiedThrough, cutFrom);
+        if (isTag) {
+          const word = /\\[A-Za-z]+$/.exec(text);
+          if (word && !isEscaped(text, word.index)) text += " ";
+          copiedThrough = close + 1;
+          tagCount++;
+        } else {
+          boxedGroups.add(text.length);
+          copiedThrough = open;
+          boxedCount++;
+        }
+      }
+      if (!boxedCount && !tagCount) return unchanged;
+      text += body.slice(copiedThrough);
+      const first = text.search(/\S/);
+      const last = text.trimEnd().length - 1;
+      if (boxedGroups.has(first) && scanMath(text).groups.get(first) === last) {
+        const inner = text.slice(first + 1, last);
+        const end = inlineBounds(inner, 0, inner.length).end;
+        if (!inline || end === 0 || !/\s/.test(inner[end - 1])) {
+          text = text.slice(0, first) + inner + text.slice(last + 1);
+        }
+      }
+      if (inline) {
+        const { start, end } = inlineBounds(text, 0, text.length);
+        text = text.slice(start, end);
+        if (text && /\s/.test(text[text.length - 1])) text = "{" + text + "}";
+      }
+      if (!text.trim()) text = inline ? "{}" : "{}" + text;
+      return { text, boxedCount, tagCount };
+    }
+    module2.exports = { cleanMath, inlineBounds, isEscaped };
+  }
+});
+
 // src/converter.js
 var require_converter = __commonJS({
   "src/converter.js"(exports2, module2) {
     "use strict";
+    var { cleanMath, inlineBounds, isEscaped } = require_math_cleanup();
     var BACKTICK = String.fromCharCode(96);
-    function isEscaped(text, position) {
-      let slashes = 0;
-      for (let i = position - 1; i >= 0 && text[i] === "\\"; i--) slashes++;
-      return slashes % 2 === 1;
-    }
     function lineEnd(text, start) {
       const newline = text.indexOf("\n", start);
       return newline === -1 ? text.length : newline;
@@ -88,6 +178,7 @@ var require_converter = __commonJS({
       if (!display && (text[start + 1] === void 0 || /\s/.test(text[start + 1]))) return null;
       let position = start + length;
       while (position < text.length) {
+        if (text.startsWith("<!--", position)) return null;
         if (text[position] === "\n") {
           const after = position + 1;
           const line = text.slice(after, lineEnd(text, after));
@@ -125,12 +216,33 @@ var require_converter = __commonJS({
       }
       return null;
     }
+    function addBodyChange(changes, input, start, end, replacement) {
+      let prefix = 0;
+      while (start + prefix < end && prefix < replacement.length && input[start + prefix] === replacement[prefix]) prefix++;
+      if (start + prefix === end && prefix === replacement.length) return;
+      let suffix = 0;
+      while (start + prefix < end - suffix && prefix < replacement.length - suffix && input[end - suffix - 1] === replacement[replacement.length - suffix - 1]) suffix++;
+      changes.push({
+        from: start + prefix,
+        to: end - suffix,
+        text: replacement.slice(prefix, replacement.length - suffix)
+      });
+    }
     function convertLatexDelimiters2(input) {
       if (typeof input !== "string") throw new TypeError("Expected a Markdown string");
       const changes = [];
       let inlineCount = 0;
       let displayCount = 0;
+      let boxedCount = 0;
+      let tagCount = 0;
       let position = frontmatterEnd(input);
+      function cleanBody(start, end, inline) {
+        const cleaned = cleanMath(input.slice(start, end), inline);
+        if (!cleaned.boxedCount && !cleaned.tagCount) return;
+        addBodyChange(changes, input, start, end, cleaned.text);
+        boxedCount += cleaned.boxedCount;
+        tagCount += cleaned.tagCount;
+      }
       while (position < input.length) {
         if (position === 0 || input[position - 1] === "\n") {
           const line = input.slice(position, lineEnd(input, position));
@@ -155,18 +267,15 @@ var require_converter = __commonJS({
             const closing = opening === "(" ? ")" : "]";
             const end = latexMathEnd(input, position, opening, closing);
             if (end !== null) {
-              let bodyStart = position + 2;
-              let bodyEnd = end;
-              if (opening === "(") {
-                while (bodyStart < bodyEnd && /\s/.test(input[bodyStart])) bodyStart++;
-                while (bodyEnd > bodyStart && /\s/.test(input[bodyEnd - 1]) && !isEscaped(input, bodyEnd - 1)) bodyEnd--;
-              }
-              const validInline = opening !== "(" || bodyStart < bodyEnd && !/\s/.test(input[bodyEnd - 1]) && !/[\r\n]/.test(input.slice(bodyStart, bodyEnd));
-              if (validInline) {
-                const replacement = opening === "(" ? "$" : "$$";
+              const inline = opening === "(";
+              const { start: bodyStart, end: bodyEnd } = inline ? inlineBounds(input, position + 2, end) : { start: position + 2, end };
+              const validBody = !inline || bodyStart < bodyEnd && !/\s/.test(input[bodyEnd - 1]) && !/[\r\n]/.test(input.slice(bodyStart, bodyEnd));
+              if (validBody) {
+                const replacement = inline ? "$" : "$$";
                 changes.push({ from: position, to: bodyStart, text: replacement });
+                cleanBody(bodyStart, bodyEnd, inline);
                 changes.push({ from: bodyEnd, to: end + 2, text: replacement });
-                if (opening === "(") inlineCount++;
+                if (inline) inlineCount++;
                 else displayCount++;
               }
               position = end + 2;
@@ -186,6 +295,8 @@ var require_converter = __commonJS({
         if (input[position] === "$" && !isEscaped(input, position)) {
           const end = dollarMathEnd(input, position);
           if (end !== null) {
+            const width = input[position + 1] === "$" ? 2 : 1;
+            cleanBody(position + width, end - width, width === 1);
             position = end;
             continue;
           }
@@ -201,7 +312,7 @@ var require_converter = __commonJS({
         copiedThrough = change.to;
       }
       text += input.slice(copiedThrough);
-      return { text, changes, inlineCount, displayCount };
+      return { text, changes, inlineCount, displayCount, boxedCount, tagCount };
     }
     module2.exports = { convertLatexDelimiters: convertLatexDelimiters2 };
   }
@@ -213,12 +324,12 @@ var { convertLatexDelimiters } = require_converter();
 module.exports = class LatexDelimiterConverter extends Plugin {
   onload() {
     this.converting = false;
-    this.addRibbonIcon("sigma", "\u8F6C\u6362\u5F53\u524D\u7B14\u8BB0\u7684\u516C\u5F0F\u5206\u9694\u7B26", () => {
+    this.addRibbonIcon("sigma", "\u8F6C\u6362\u5E76\u6E05\u7406\u5F53\u524D\u7B14\u8BB0\u7684\u516C\u5F0F", () => {
       void this.convertActiveNote();
     });
     this.addCommand({
       id: "convert-current-note",
-      name: "\u8F6C\u6362\u5F53\u524D\u7B14\u8BB0\u7684\u516C\u5F0F\u5206\u9694\u7B26",
+      name: "\u8F6C\u6362\u5E76\u6E05\u7406\u5F53\u524D\u7B14\u8BB0\u7684\u516C\u5F0F",
       checkCallback: (checking) => {
         const view = this.app.workspace.getActiveViewOfType(MarkdownView);
         if (!view || !view.file) return false;
@@ -247,7 +358,7 @@ module.exports = class LatexDelimiterConverter extends Plugin {
       const editor = view.editor;
       const result = convertLatexDelimiters(editor.getValue());
       if (result.changes.length === 0) {
-        new Notice("\u6CA1\u6709\u627E\u5230\u9700\u8981\u8F6C\u6362\u7684\u6210\u5BF9\u516C\u5F0F\u5206\u9694\u7B26\u3002");
+        new Notice("\u6CA1\u6709\u627E\u5230\u9700\u8981\u8F6C\u6362\u6216\u6E05\u7406\u7684\u516C\u5F0F\u3002");
         return;
       }
       editor.transaction({
@@ -257,7 +368,14 @@ module.exports = class LatexDelimiterConverter extends Plugin {
           text: change.text
         }))
       }, "latex-delimiter-converter");
-      new Notice(`\u5DF2\u8F6C\u6362 ${result.inlineCount} \u4E2A\u884C\u5185\u516C\u5F0F\u3001${result.displayCount} \u4E2A\u5757\u516C\u5F0F\u3002\u53EF\u64A4\u9500\u6062\u590D\u3002`);
+      const summary = [];
+      if (result.inlineCount || result.displayCount) {
+        summary.push(`\u5DF2\u8F6C\u6362 ${result.inlineCount} \u4E2A\u884C\u5185\u516C\u5F0F\u3001${result.displayCount} \u4E2A\u5757\u516C\u5F0F`);
+      }
+      if (result.boxedCount || result.tagCount) {
+        summary.push(`\u5DF2\u79FB\u9664 ${result.boxedCount} \u4E2A\u5916\u6846\u3001${result.tagCount} \u4E2A\u7F16\u53F7`);
+      }
+      new Notice(summary.join("\uFF1B") + "\u3002\u53EF\u64A4\u9500\u6062\u590D\u3002");
     } catch (error) {
       console.error("LaTeX Delimiter Converter: conversion failed", error);
       new Notice("\u516C\u5F0F\u8F6C\u6362\u5931\u8D25\uFF0C\u8BF7\u68C0\u67E5\u5F53\u524D\u7B14\u8BB0\u662F\u5426\u53EF\u4EE5\u7F16\u8F91\u3002");

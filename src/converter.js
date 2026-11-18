@@ -1,12 +1,7 @@
 "use strict";
 
+const { cleanMath, inlineBounds, isEscaped } = require("./math-cleanup");
 const BACKTICK = String.fromCharCode(96);
-
-function isEscaped(text, position) {
-  let slashes = 0;
-  for (let i = position - 1; i >= 0 && text[i] === "\\"; i--) slashes++;
-  return slashes % 2 === 1;
-}
 
 function lineEnd(text, start) {
   const newline = text.indexOf("\n", start);
@@ -91,6 +86,7 @@ function dollarMathEnd(text, start) {
   if (!display && (text[start + 1] === undefined || /\s/.test(text[start + 1]))) return null;
   let position = start + length;
   while (position < text.length) {
+    if (text.startsWith("<!--", position)) return null;
     if (text[position] === "\n") {
       const after = position + 1;
       const line = text.slice(after, lineEnd(text, after));
@@ -135,9 +131,23 @@ function latexMathEnd(text, start, opening, closing) {
   return null;
 }
 
+function addBodyChange(changes, input, start, end, replacement) {
+  let prefix = 0;
+  while (start + prefix < end && prefix < replacement.length &&
+      input[start + prefix] === replacement[prefix]) prefix++;
+  if (start + prefix === end && prefix === replacement.length) return;
+  let suffix = 0;
+  while (start + prefix < end - suffix && prefix < replacement.length - suffix &&
+      input[end - suffix - 1] === replacement[replacement.length - suffix - 1]) suffix++;
+  changes.push({
+    from: start + prefix,
+    to: end - suffix,
+    text: replacement.slice(prefix, replacement.length - suffix),
+  });
+}
+
 /**
- * Convert paired LaTeX math delimiters. Display bodies remain byte-for-byte
- * unchanged; inline bodies have only their inner-edge whitespace removed.
+ * Convert paired LaTeX delimiters and clean up decorations inside math.
  * Offsets in changes use JavaScript/Obsidian UTF-16 string positions.
  */
 function convertLatexDelimiters(input) {
@@ -145,7 +155,17 @@ function convertLatexDelimiters(input) {
   const changes = [];
   let inlineCount = 0;
   let displayCount = 0;
+  let boxedCount = 0;
+  let tagCount = 0;
   let position = frontmatterEnd(input);
+
+  function cleanBody(start, end, inline) {
+    const cleaned = cleanMath(input.slice(start, end), inline);
+    if (!cleaned.boxedCount && !cleaned.tagCount) return;
+    addBodyChange(changes, input, start, end, cleaned.text);
+    boxedCount += cleaned.boxedCount;
+    tagCount += cleaned.tagCount;
+  }
 
   while (position < input.length) {
     if (position === 0 || input[position - 1] === "\n") {
@@ -174,25 +194,20 @@ function convertLatexDelimiters(input) {
         const closing = opening === "(" ? ")" : "]";
         const end = latexMathEnd(input, position, opening, closing);
         if (end !== null) {
-          let bodyStart = position + 2;
-          let bodyEnd = end;
-          if (opening === "(") {
-            while (bodyStart < bodyEnd && /\s/.test(input[bodyStart])) bodyStart++;
-            while (
-              bodyEnd > bodyStart &&
-              /\s/.test(input[bodyEnd - 1]) &&
-              !isEscaped(input, bodyEnd - 1)
-            ) bodyEnd--;
-          }
-          const validInline = opening !== "(" ||
+          const inline = opening === "(";
+          const { start: bodyStart, end: bodyEnd } = inline
+            ? inlineBounds(input, position + 2, end)
+            : { start: position + 2, end };
+          const validBody = !inline ||
             (bodyStart < bodyEnd &&
               !/\s/.test(input[bodyEnd - 1]) &&
               !/[\r\n]/.test(input.slice(bodyStart, bodyEnd)));
-          if (validInline) {
-            const replacement = opening === "(" ? "$" : "$$";
+          if (validBody) {
+            const replacement = inline ? "$" : "$$";
             changes.push({ from: position, to: bodyStart, text: replacement });
+            cleanBody(bodyStart, bodyEnd, inline);
             changes.push({ from: bodyEnd, to: end + 2, text: replacement });
-            if (opening === "(") inlineCount++;
+            if (inline) inlineCount++;
             else displayCount++;
           }
           position = end + 2;
@@ -214,6 +229,8 @@ function convertLatexDelimiters(input) {
     if (input[position] === "$" && !isEscaped(input, position)) {
       const end = dollarMathEnd(input, position);
       if (end !== null) {
+        const width = input[position + 1] === "$" ? 2 : 1;
+        cleanBody(position + width, end - width, width === 1);
         position = end;
         continue;
       }
@@ -231,7 +248,7 @@ function convertLatexDelimiters(input) {
     copiedThrough = change.to;
   }
   text += input.slice(copiedThrough);
-  return { text, changes, inlineCount, displayCount };
+  return { text, changes, inlineCount, displayCount, boxedCount, tagCount };
 }
 
 module.exports = { convertLatexDelimiters };

@@ -157,6 +157,17 @@ test("converts the current note in one transaction and one undo restores it", as
   assert.equal(plugin.converting, false);
 });
 
+test("one click cleans existing dollar math and one undo restores the decorations", async () => {
+  const original = String.raw`$\boxed{x}$ and $$y \tag*{2}$$`;
+  const { plugin, editor, notices } = loadPlugin({ text: original });
+  await plugin.convertActiveNote();
+  assert.equal(editor.getValue(), "$x$ and $$y$$");
+  assert.match(notices[0], /移除 1 个外框、1 个编号/);
+  assert.doesNotMatch(notices[0], /已转换/);
+  editor.undo();
+  assert.equal(editor.getValue(), original);
+});
+
 test("a second click is idempotent and creates no additional undo entry", async () => {
   const { plugin, editor, notices } = loadPlugin();
   await plugin.convertActiveNote();

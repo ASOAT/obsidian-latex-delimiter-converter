@@ -1,9 +1,9 @@
 {
   "id": "latex-delimiter-converter",
   "name": "LaTeX Delimiter Converter",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "minAppVersion": "1.1.0",
-  "description": "Convert paired LaTeX delimiters to dollar math syntax in the current note with one click.",
+  "description": "Convert LaTeX math delimiters and remove formula boxes and tags in the current note.",
   "author": "ASOAT",
   "authorUrl": "https://github.com/ASOAT",
   "isDesktopOnly": false
